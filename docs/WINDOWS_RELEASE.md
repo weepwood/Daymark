@@ -79,3 +79,7 @@ flutter build windows --release
 - `.github/workflows/windows-release.yml`：Windows 自动构建与 Release
 - `installer/daymark.iss`：Inno Setup 安装配置
 - `pubspec.yaml`：Flutter 版本和应用版本
+
+## 安装向导语言
+
+安装包支持简体中文与英文。简体中文语言文件来自 [kira-96/Inno-Setup-Chinese-Simplified-Translation](https://github.com/kira-96/Inno-Setup-Chinese-Simplified-Translation)，保留原始 MIT 许可文本于 `installer/languages/LICENSE`。CI 不依赖 Windows Runner 预装的语言文件。
