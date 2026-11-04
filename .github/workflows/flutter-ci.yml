@@ -19,15 +19,13 @@ jobs:
         uses: subosito/flutter-action@v2
         with:
           channel: stable
-          flutter-version: '3.35.0'
+          flutter-version: '3.47.9'
           cache: true
-      - name: 生成平台工程
-        run: flutter create --project-name daymark_flutter .
       - name: 下载依赖
         run: flutter pub get
       - name: 静态分析
         run: flutter analyze
       - name: 单元测试
-        run: flutter test
+        run: flutter test --coverage
       - name: 构建 Web
         run: flutter build web --release

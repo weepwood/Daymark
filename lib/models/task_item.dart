@@ -8,6 +8,12 @@ extension PriorityText on TaskPriority {
         TaskPriority.medium => '中优先级',
         TaskPriority.high => '高优先级',
       };
+
+  int get sortOrder => switch (this) {
+        TaskPriority.high => 0,
+        TaskPriority.medium => 1,
+        TaskPriority.low => 2,
+      };
 }
 
 extension CategoryText on TaskCategory {
@@ -20,6 +26,7 @@ extension CategoryText on TaskCategory {
       };
 }
 
+/// Immutable task model. Value equality lets selectors rebuild only changed rows.
 class TaskItem {
   const TaskItem({
     required this.id,
@@ -31,6 +38,8 @@ class TaskItem {
     this.dueAt,
     this.completedAt,
   });
+
+  static const int schemaVersion = 1;
 
   final String id;
   final String title;
@@ -66,6 +75,7 @@ class TaskItem {
   }
 
   Map<String, dynamic> toJson() => {
+        'v': schemaVersion,
         'id': id,
         'title': title,
         'description': description,
@@ -76,27 +86,69 @@ class TaskItem {
         'completedAt': completedAt?.toIso8601String(),
       };
 
+  /// Tolerant decode: only `id`, `title` and `createdAt` are required.
+  /// A single malformed field must never make the whole list unreadable.
   factory TaskItem.fromJson(Map<String, dynamic> json) {
-    T readEnum<T extends Enum>(List<T> values, Object? value, T fallback) {
-      for (final entry in values) {
-        if (entry.name == value) return entry;
-      }
-      return fallback;
+    final id = json['id'];
+    final title = json['title'];
+    if (id is! String || title is! String) {
+      throw const FormatException('Task is missing id or title');
+    }
+    final created = _parseDate(json['createdAt']);
+    if (created == null) {
+      throw const FormatException('Task has an invalid createdAt');
     }
 
     return TaskItem(
-      id: json['id'] as String,
-      title: json['title'] as String,
-      description: json['description'] as String? ?? '',
-      category: readEnum(TaskCategory.values, json['category'], TaskCategory.personal),
-      priority: readEnum(TaskPriority.values, json['priority'], TaskPriority.medium),
-      createdAt: DateTime.parse(json['createdAt'] as String),
-      dueAt: json['dueAt'] == null ? null : DateTime.parse(json['dueAt'] as String),
-      completedAt: json['completedAt'] == null
-          ? null
-          : DateTime.parse(json['completedAt'] as String),
+      id: id,
+      title: title,
+      description: json['description'] is String
+          ? json['description'] as String
+          : '',
+      category:
+          readEnum(TaskCategory.values, json['category'], TaskCategory.personal),
+      priority:
+          readEnum(TaskPriority.values, json['priority'], TaskPriority.medium),
+      createdAt: created,
+      dueAt: _parseDate(json['dueAt']),
+      completedAt: _parseDate(json['completedAt']),
     );
   }
+
+  static DateTime? _parseDate(Object? value) =>
+      value is String ? DateTime.tryParse(value) : null;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is TaskItem &&
+          other.id == id &&
+          other.title == title &&
+          other.description == description &&
+          other.category == category &&
+          other.priority == priority &&
+          other.createdAt == createdAt &&
+          other.dueAt == dueAt &&
+          other.completedAt == completedAt;
+
+  @override
+  int get hashCode => Object.hash(
+        id,
+        title,
+        description,
+        category,
+        priority,
+        createdAt,
+        dueAt,
+        completedAt,
+      );
+}
+
+T readEnum<T extends Enum>(List<T> values, Object? value, T fallback) {
+  for (final entry in values) {
+    if (entry.name == value) return entry;
+  }
+  return fallback;
 }
 
 const _unchanged = Object();

@@ -13,3 +13,9 @@ coverage/
 **/flutter/ephemeral/
 **/Generated.xcconfig
 **/flutter_export_environment.sh
+
+# 排除 agent 元数据与本地环境配置（非项目代码）
+.workbuddy/
+.env
+.env.*
+!.env.example

@@ -42,4 +42,36 @@ void main() {
     expect(isOverdue(sample.first, now), true);
     expect(isOverdue(sample.last, now), false);
   });
+
+  test('priority filter sentinel maps to a nullable priority', () {
+    expect(PriorityFilter.all.priority, isNull);
+    expect(PriorityFilter.high.priority, TaskPriority.high);
+    expect(PriorityFilter.values.every((v) => v.label.isNotEmpty), isTrue);
+  });
+
+  test('summary distinguishes overall completion from today load', () {
+    final summary = summarize(sample, now);
+    expect(summary.total, 4);
+    expect(summary.completed, 1);
+    expect(summary.pending, 3);
+    expect(summary.dueToday, 2);
+    expect(summary.important, 1);
+    expect(summary.ratio, 0.25);
+  });
+
+  test('completed view sorts by completion time, not due date', () {
+    final older = TaskItem(id: 'older', title: '旧', createdAt: now,
+        dueAt: DateTime(2026, 11, 3), completedAt: DateTime(2026, 11, 1));
+    final newer = TaskItem(id: 'newer', title: '新', createdAt: now,
+        dueAt: DateTime(2026, 11, 1), completedAt: DateTime(2026, 11, 4));
+    final result = filterTasks([older, newer], view: TaskView.completed, now: now);
+    expect(result.map((t) => t.id), ['newer', 'older']);
+  });
+
+  test('view counts match their filters', () {
+    for (final view in TaskView.values) {
+      expect(countForView(sample, view, now),
+          filterTasks(sample, view: view, now: now).length);
+    }
+  });
 }

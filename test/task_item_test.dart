@@ -44,4 +44,32 @@ void main() {
     expect(decoded.priority, TaskPriority.medium);
     expect(decoded.category, TaskCategory.personal);
   });
+
+  test('schema version is written for future migrations', () {
+    expect(sample.toJson()['v'], TaskItem.schemaVersion);
+  });
+
+  test('value equality lets selectors skip unchanged rows', () {
+    expect(TaskItem.fromJson(sample.toJson()), sample);
+    expect(sample.copyWith(title: '改过的标题') == sample, isFalse);
+  });
+
+  test('bad optional dates degrade to null instead of throwing', () {
+    final decoded = TaskItem.fromJson({
+      ...sample.toJson(),
+      'dueAt': 'not-a-date',
+      'completedAt': 42,
+      'description': null,
+    });
+    expect(decoded.dueAt, isNull);
+    expect(decoded.completedAt, isNull);
+    expect(decoded.description, '');
+  });
+
+  test('a record without id/title is rejected so it can be isolated', () {
+    expect(
+      () => TaskItem.fromJson({'createdAt': created.toIso8601String()}),
+      throwsA(isA<FormatException>()),
+    );
+  });
 }

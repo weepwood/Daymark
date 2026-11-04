@@ -12,6 +12,27 @@ extension TaskViewText on TaskView {
       };
 }
 
+/// Sentinel enum for the priority popup. Using `null` as the "all" value is a
+/// bug: PopupMenuButton treats a null result as a cancelled menu, so onSelected
+/// never fires and the filter cannot be cleared.
+enum PriorityFilter { all, low, medium, high }
+
+extension PriorityFilterValue on PriorityFilter {
+  TaskPriority? get priority => switch (this) {
+        PriorityFilter.all => null,
+        PriorityFilter.low => TaskPriority.low,
+        PriorityFilter.medium => TaskPriority.medium,
+        PriorityFilter.high => TaskPriority.high,
+      };
+
+  String get label => switch (this) {
+        PriorityFilter.all => '全部优先级',
+        PriorityFilter.low => TaskPriority.low.label,
+        PriorityFilter.medium => TaskPriority.medium.label,
+        PriorityFilter.high => TaskPriority.high.label,
+      };
+}
+
 int compareDays(DateTime a, DateTime b) {
   final left = DateTime.utc(a.year, a.month, a.day);
   final right = DateTime.utc(b.year, b.month, b.day);
@@ -22,6 +43,74 @@ bool isOverdue(TaskItem task, DateTime now) =>
     !task.isCompleted &&
     task.dueAt != null &&
     compareDays(task.dueAt!, now) < 0;
+
+class TaskSummary {
+  const TaskSummary({
+    required this.total,
+    required this.completed,
+    required this.pending,
+    required this.dueToday,
+    required this.important,
+  });
+
+  final int total;
+  final int completed;
+  final int pending;
+  final int dueToday;
+  final int important;
+
+  double get ratio => total == 0 ? 0 : completed / total;
+}
+
+TaskSummary summarize(Iterable<TaskItem> tasks, DateTime now) {
+  var completed = 0;
+  var dueToday = 0;
+  var important = 0;
+  var total = 0;
+  for (final task in tasks) {
+    total++;
+    if (task.isCompleted) {
+      completed++;
+      continue;
+    }
+    if (task.dueAt != null && compareDays(task.dueAt!, now) <= 0) dueToday++;
+    if (task.priority == TaskPriority.high) important++;
+  }
+  return TaskSummary(
+    total: total,
+    completed: completed,
+    pending: total - completed,
+    dueToday: dueToday,
+    important: important,
+  );
+}
+
+int countForView(Iterable<TaskItem> tasks, TaskView view, DateTime now) {
+  switch (view) {
+    case TaskView.all:
+      return tasks.length;
+    case TaskView.today:
+      return tasks
+          .where((t) =>
+              !t.isCompleted &&
+              t.dueAt != null &&
+              compareDays(t.dueAt!, now) <= 0)
+          .length;
+    case TaskView.upcoming:
+      return tasks
+          .where((t) =>
+              !t.isCompleted &&
+              t.dueAt != null &&
+              compareDays(t.dueAt!, now) > 0)
+          .length;
+    case TaskView.important:
+      return tasks
+          .where((t) => !t.isCompleted && t.priority == TaskPriority.high)
+          .length;
+    case TaskView.completed:
+      return tasks.where((t) => t.isCompleted).length;
+  }
+}
 
 List<TaskItem> filterTasks(
   Iterable<TaskItem> tasks, {
@@ -43,14 +132,28 @@ List<TaskItem> filterTasks(
     }
     return switch (view) {
       TaskView.all => true,
-      TaskView.today => !task.isCompleted && task.dueAt != null &&
+      TaskView.today => !task.isCompleted &&
+          task.dueAt != null &&
           compareDays(task.dueAt!, today) <= 0,
-      TaskView.upcoming => !task.isCompleted && task.dueAt != null &&
+      TaskView.upcoming => !task.isCompleted &&
+          task.dueAt != null &&
           compareDays(task.dueAt!, today) > 0,
-      TaskView.important => !task.isCompleted && task.priority == TaskPriority.high,
+      TaskView.important =>
+        !task.isCompleted && task.priority == TaskPriority.high,
       TaskView.completed => task.isCompleted,
     };
   }).toList();
+
+  if (view == TaskView.completed) {
+    // Most recently completed first, not by due date.
+    filtered.sort((a, b) {
+      final left = a.completedAt;
+      final right = b.completedAt;
+      if (left != null && right != null) return right.compareTo(left);
+      return b.createdAt.compareTo(a.createdAt);
+    });
+    return filtered;
+  }
 
   filtered.sort((a, b) {
     if (a.isCompleted != b.isCompleted) return a.isCompleted ? 1 : -1;
@@ -62,7 +165,8 @@ List<TaskItem> filterTasks(
     } else if (b.dueAt != null) {
       return 1;
     }
-    if (a.priority != b.priority) return b.priority.index.compareTo(a.priority.index);
+    final order = a.priority.sortOrder.compareTo(b.priority.sortOrder);
+    if (order != 0) return order;
     return b.createdAt.compareTo(a.createdAt);
   });
   return filtered;

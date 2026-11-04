@@ -2,47 +2,88 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import '../data/demo_tasks.dart';
 import '../data/task_repository.dart';
 import '../models/task_item.dart';
 
+enum TaskPhase { loading, ready, readFailure }
+
+enum TaskSaveState { idle, failed }
+
+/// Single source of truth for tasks. All mutations are rejected until [load]
+/// completes, which closes the cold-start race where a task created while the
+/// repository was still reading could be persisted as the entire task list.
 class TaskController extends ChangeNotifier {
   TaskController(this._repository);
 
   final TaskRepository _repository;
   List<TaskItem> _tasks = [];
-  bool _isLoading = true;
-  String? _error;
+  TaskPhase _phase = TaskPhase.loading;
+  TaskSaveState _saveState = TaskSaveState.idle;
   Future<void> _pendingWrite = Future<void>.value();
-  int _nextId = 0;
-  bool _loadFailed = false;
+  bool _loadStarted = false;
   bool _closed = false;
+  int _nextId = 0;
+  int _revision = 0;
+  int _skipped = 0;
 
   List<TaskItem> get tasks => List.unmodifiable(_tasks);
-  bool get isLoading => _isLoading;
-  String? get error => _error;
+  TaskPhase get phase => _phase;
+  TaskSaveState get saveState => _saveState;
+  bool get isLoading => _phase == TaskPhase.loading;
+  bool get canEdit => _phase == TaskPhase.ready;
+  bool get hasWriteError => _saveState == TaskSaveState.failed;
+  int get skippedRecords => _skipped;
+
+  String? get errorMessage => switch (_phase) {
+        TaskPhase.loading => null,
+        TaskPhase.readFailure => '读取本地数据失败。为避免覆盖旧数据，当前为只读状态。',
+        TaskPhase.ready => hasWriteError
+            ? '保存失败：任务仍显示在页面上，但尚未写入磁盘，请重试。'
+            : null,
+      };
 
   Future<void> load() async {
+    if (_loadStarted) return;
+    _loadStarted = true;
     try {
-      _tasks = await _repository.read() ?? _demoTasks(DateTime.now());
-      _error = null;
-      _loadFailed = false;
+      final snapshot = await _repository.read();
+      if (snapshot == null) {
+        _tasks = demoTasks(DateTime.now());
+        // Persist first-launch samples so they never regenerate on next start.
+        await _repository.write(_tasks);
+      } else {
+        _tasks = snapshot.tasks;
+        _skipped = snapshot.skipped;
+      }
+      _phase = TaskPhase.ready;
     } catch (_) {
-      _loadFailed = true;
-      _error = '读取本地数据失败。为避免覆盖旧数据，当前已关闭保存功能。';
       _tasks = [];
-    } finally {
-      _isLoading = false;
-      notifyListeners();
+      _phase = TaskPhase.readFailure;
     }
+    _notify();
   }
 
-  TaskItem add({
+  Future<void> retryLoad() async {
+    if (!_closed) {
+      _phase = TaskPhase.loading;
+      _loadStarted = false;
+      _notify();
+    }
+    await load();
+  }
+
+  /// Waits for queued writes, used on app pause / shutdown.
+  Future<void> flush() => _pendingWrite;
+
+  TaskItem? add({
     required String title,
     required String description,
     required TaskCategory category,
     required TaskPriority priority,
     DateTime? dueAt,
   }) {
+    if (!_guard()) return null;
     final now = DateTime.now();
     final task = TaskItem(
       id: '${now.microsecondsSinceEpoch}-${_nextId++}',
@@ -59,6 +100,8 @@ class TaskController extends ChangeNotifier {
   }
 
   void update(TaskItem task) {
+    if (!_guard()) return;
+    if (!_tasks.any((item) => item.id == task.id)) return;
     _tasks = [for (final item in _tasks) if (item.id == task.id) task else item];
     _changed();
   }
@@ -68,69 +111,63 @@ class TaskController extends ChangeNotifier {
   }
 
   void remove(TaskItem task) {
+    if (!_guard()) return;
     _tasks = _tasks.where((item) => item.id != task.id).toList();
     _changed();
   }
 
   void restore(TaskItem task) {
+    if (!_guard()) return;
     if (_tasks.any((item) => item.id == task.id)) return;
     _tasks = [..._tasks, task];
     _changed();
   }
 
   void retrySave() {
-    if (_loadFailed) return;
-    _error = null;
+    if (!_guard() || !hasWriteError) return;
+    _saveState = TaskSaveState.idle;
     _changed();
   }
 
+  Future<bool> restoreBackup() async {
+    try {
+      return await _repository.restoreBackup();
+    } catch (_) {
+      return false;
+    }
+  }
+
+  bool _guard() => _phase == TaskPhase.ready && !_closed;
+
   void _changed() {
-    if (_closed) return;
-    notifyListeners();
-    if (_error != null) return;
+    _notify();
+    final revision = ++_revision;
     final snapshot = List<TaskItem>.of(_tasks);
-    // Serialize writes: a slow older snapshot can never overwrite a newer one.
-    _pendingWrite = _pendingWrite.then((_) => _repository.write(snapshot)).catchError((Object _) {
-      _error = '保存失败：任务仍保留在当前页面，请检查设备存储后重试。';
-      if (!_closed) notifyListeners();
+    // Serialized writes + revision guard: only the newest result updates the
+    // error state, so an older failure cannot leave the UI stuck in "failed".
+    _pendingWrite = _pendingWrite.then((_) async {
+      try {
+        await _repository.write(snapshot);
+        if (!_closed && revision == _revision && _phase == TaskPhase.ready) {
+          _saveState = TaskSaveState.idle;
+          _notify();
+        }
+      } catch (_) {
+        if (!_closed && revision == _revision && _phase == TaskPhase.ready) {
+          _saveState = TaskSaveState.failed;
+          _notify();
+        }
+      }
     });
   }
+
+  void _notify() {
+    if (!_closed) notifyListeners();
+  }
+
   @override
   void dispose() {
     _closed = true;
     super.dispose();
   }
-}
-
-List<TaskItem> _demoTasks(DateTime now) {
-  DateTime date(int offset) => DateTime(now.year, now.month, now.day + offset);
-  TaskItem item(
-    String id,
-    String title,
-    TaskCategory category,
-    TaskPriority priority,
-    int? dueOffset, {
-    String description = '',
-    bool done = false,
-  }) =>
-      TaskItem(
-        id: 'demo-$id',
-        title: title,
-        description: description,
-        category: category,
-        priority: priority,
-        createdAt: now.subtract(const Duration(days: 1)),
-        dueAt: dueOffset == null ? null : date(dueOffset),
-        completedAt: done ? now : null,
-      );
-
-  return [
-    item('1', '整理本周任务计划', TaskCategory.work, TaskPriority.high, 0,
-        description: '确定优先级并安排各项工作时间'),
-    item('2', '完成 Flutter 首页布局', TaskCategory.work, TaskPriority.high, 0),
-    item('3', '阅读 30 分钟', TaskCategory.study, TaskPriority.medium, 1),
-    item('4', '运动与拉伸', TaskCategory.health, TaskPriority.low, 2),
-    item('5', '整理个人设计资源库', TaskCategory.personal, TaskPriority.medium, 4),
-    item('6', '梳理产品需求', TaskCategory.work, TaskPriority.medium, -1, done: true),
-  ];
 }
