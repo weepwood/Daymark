@@ -112,3 +112,9 @@ docs/                                 # 优化方案、UI 方案、实施报告
 ## 后续扩展
 
 导入导出与文件备份、逐条撤销 Toast 队列、入场动效、golden test 基线、日历视图、7 日完成趋势、提醒通知、重复任务、子任务、拖拽排序，以及可选的端到端加密云同步。
+
+## Windows 桌面安装包
+
+通过 GitHub Actions 自动构建 Windows x64 安装程序与免安装 ZIP。日常构建包可在 [Actions](https://github.com/weepwood/Daymark/actions/workflows/windows-release.yml) 下载；推送与 `pubspec.yaml` 匹配的 `vX.Y.Z` 标签后，成功构建的安装程序将自动进入 [Releases](https://github.com/weepwood/Daymark/releases)。
+
+详细说明请参见 [Windows 构建与发布文档](docs/WINDOWS_RELEASE.md)。
