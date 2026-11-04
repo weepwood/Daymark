@@ -1,0 +1,139 @@
+name: Windows 安装包构建与发布
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    name: Windows x64 · 测试与打包
+    runs-on: windows-2022
+    steps:
+      - name: 检出源代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.47.9'
+          cache: true
+
+      - name: 读取版本并检查发布标签
+        shell: pwsh
+        run: |
+          $text = Get-Content pubspec.yaml -Raw
+          $match = [regex]::Match($text, '(?m)^version:\s*(\d+\.\d+\.\d+)(?:\+\d+)?\s*$')
+          if (-not $match.Success) { throw 'pubspec.yaml 中未找到有效的版本号' }
+          $version = $match.Groups[1].Value
+          if ($env:GITHUB_REF -like 'refs/tags/v*' -and $env:GITHUB_REF_NAME -ne "v$version") {
+            throw "标签 $env:GITHUB_REF_NAME 与 pubspec.yaml 版本 v$version 不一致"
+          }
+          "APP_VERSION=$version" >> $env:GITHUB_ENV
+          Write-Host "构建 Daymark v$version"
+
+      - name: 生成 Windows 平台工程
+        shell: pwsh
+        run: |
+          flutter config --enable-windows-desktop
+          if ($LASTEXITCODE -ne 0) { throw '无法启用 Flutter Windows 桌面支持' }
+          flutter create --platforms=windows --project-name daymark_flutter --org com.weepwood .
+          if ($LASTEXITCODE -ne 0) { throw '无法生成 Windows 平台工程' }
+          $cmakePath = 'windows/CMakeLists.txt'
+          $cmake = Get-Content $cmakePath -Raw
+          if ($cmake -notmatch 'set\(BINARY_NAME\s+"daymark_flutter"\)') {
+            throw 'Flutter Windows CMake 模板已改变，请检查可执行文件名配置'
+          }
+          $cmake = $cmake -replace 'set\(BINARY_NAME\s+"daymark_flutter"\)', 'set(BINARY_NAME "Daymark")'
+          Set-Content $cmakePath -Value $cmake -Encoding utf8
+          $mainPath = 'windows/runner/main.cpp'
+          $main = Get-Content $mainPath -Raw
+          $main = $main.Replace('L"daymark_flutter"', 'L"Daymark"')
+          Set-Content $mainPath -Value $main -Encoding utf8
+          $rcPath = 'windows/runner/Runner.rc'
+          $rc = (Get-Content $rcPath -Raw).Replace('daymark_flutter', 'Daymark')
+          Set-Content $rcPath -Value $rc -Encoding utf8
+
+      - name: 获取依赖
+        run: flutter pub get
+
+      - name: 运行单元测试
+        run: flutter test
+
+      - name: 构建 Windows Release
+        run: flutter build windows --release
+
+      - name: 添加 Visual C++ 应用本地运行库
+        shell: pwsh
+        run: |
+          $releaseDir = 'build/windows/x64/runner/Release'
+          if (-not (Test-Path "$releaseDir/Daymark.exe")) { throw '未找到 Daymark.exe' }
+          if (-not (Test-Path "$releaseDir/data")) { throw '未找到 Flutter data 目录' }
+          foreach ($dll in @('msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll')) {
+            $src = Join-Path $env:WINDIR "System32\$dll"
+            if (-not (Test-Path $src)) { throw "缺少运行库 $src" }
+            Copy-Item $src -Destination $releaseDir -Force
+          }
+
+      - name: 安装 Inno Setup 6
+        shell: pwsh
+        run: |
+          choco install innosetup --version=6.7.1 --yes --no-progress --allow-downgrade
+          if ($LASTEXITCODE -ne 0) { throw 'Inno Setup 安装失败' }
+
+      - name: 编译 Windows 安装程序
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $iscc = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $iscc)) { throw "未找到 Inno Setup 编译器：$iscc" }
+          & $iscc "/DAppVersion=$env:APP_VERSION" 'installer/daymark.iss'
+          if ($LASTEXITCODE -ne 0) { throw 'Inno Setup 编译失败' }
+          $setup = "dist/Daymark-Setup-$env:APP_VERSION-windows-x64.exe"
+          if (-not (Test-Path $setup)) { throw "未找到安装包：$setup" }
+
+      - name: 制作免安装版及 SHA-256 校验文件
+        shell: pwsh
+        run: |
+          $releaseDir = 'build/windows/x64/runner/Release'
+          $portable = "dist/Daymark-$env:APP_VERSION-windows-x64-portable.zip"
+          Compress-Archive -Path "$releaseDir/*" -DestinationPath $portable -CompressionLevel Optimal -Force
+          Get-ChildItem dist -File | Sort-Object Name | ForEach-Object {
+            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $($_.Name)"
+          } | Set-Content 'dist/SHA256SUMS.txt' -Encoding utf8
+          Get-ChildItem dist | Select-Object Name, Length
+
+      - name: 上传 Windows 构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: Daymark-Windows-${{ github.run_number }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: 发布 GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build-windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 下载已验证的 Windows 构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: Daymark-Windows-${{ github.run_number }}
+          path: dist
+
+      - name: 创建 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
