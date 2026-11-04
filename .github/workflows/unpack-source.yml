@@ -1,0 +1,35 @@
+name: 展开 Daymark Flutter 项目源码
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'source.tar.xz.b64'
+      - '.github/workflows/unpack-source.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  unpack:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+      - name: 校验并发布源码
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(wc -c < source.tar.xz.b64)" -eq 18216
+          base64 -d source.tar.xz.b64 > daymark_source.tar.xz
+          echo 'fbdfc1f5f56a3d654177aceee0e84608e2196233916a75f47ee8713426db5676  daymark_source.tar.xz' | sha256sum -c -
+          tar -tJf daymark_source.tar.xz > /tmp/daymark-files.txt
+          grep -Fx 'daymark_flutter/lib/main.dart' /tmp/daymark-files.txt
+          tar -xJf daymark_source.tar.xz --strip-components=1
+          rm -f source.tar.xz.b64 daymark_source.tar.xz .github/workflows/unpack-source.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --quiet || git commit -m '发布 Daymark Flutter 完整源码'
+          git push
